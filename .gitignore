@@ -336,3 +336,4 @@ pyrightconfig.json
 .idea/
 
 code_practice/week2/MNIST_data/
+/code_practice/week4/data/
