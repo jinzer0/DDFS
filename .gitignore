@@ -337,3 +337,4 @@ pyrightconfig.json
 
 code_practice/week2/MNIST_data/
 /code_practice/week4/data/
+/code_practice/week6/result/GAN/1-GAN/model_weights.pth
