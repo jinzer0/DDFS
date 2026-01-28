@@ -1,5 +1,5 @@
 
-import os, random, cv2, shutil, glob, gc
+import os, random, cv2, shutil, glob, gc, ast
 import numpy as np
 import pandas as pd
 import torch
@@ -142,9 +142,10 @@ print(valid_df["label"].value_counts(normalize=True))
 
 
 class CustomDataset(Dataset):
-    def __init__(self, dataframe, transform=None):
+    def __init__(self, dataframe, transform=None, return_path: bool = False):
         self.dataframe = dataframe.reset_index(drop=True)
         self.transform = transform
+        self.return_path = return_path
 
     def __len__(self):
         return len(self.dataframe)
@@ -158,6 +159,8 @@ class CustomDataset(Dataset):
                 img = self.transform(img)
 
         label = 0 if self.dataframe.iloc[idx, 1] == "real" else 1
+        if self.return_path:
+            return img, label, img_path
         return img, label
 
 
@@ -307,13 +310,19 @@ def set_model(config): # model 생성
     return model
 
 @torch.no_grad()
-def eval_test(model, test_loader, device):
+def eval_test(model, test_loader, device, return_misclassified: bool = False):
     model.eval()
     all_labels = []
     all_preds = []
     all_probs = []
+    misclassified = []
 
-    for inputs, labels in test_loader:
+    for batch in test_loader:
+        if len(batch) == 2:
+            inputs, labels = batch
+            paths = None
+        else:
+            inputs, labels, paths = batch
         inputs = inputs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True).long()
 
@@ -324,6 +333,11 @@ def eval_test(model, test_loader, device):
         all_labels.append(labels.cpu())
         all_preds.append(preds.cpu())
         all_probs.append(probs.cpu())
+
+        if return_misclassified and paths is not None:
+            wrong_mask = preds != labels
+            for p, true_l, pred_l in zip(paths, labels[wrong_mask], preds[wrong_mask]):
+                misclassified.append((p, int(true_l.cpu().item()), int(pred_l.cpu().item())))
 
     y_true = torch.cat(all_labels).numpy()
     y_pred = torch.cat(all_preds).numpy()
@@ -344,6 +358,8 @@ def eval_test(model, test_loader, device):
 
     f1 = f1_score(y_true, y_pred, average="binary")
     
+    if return_misclassified:
+        return float(acc), float(auc), float(f1), cm, fig, misclassified
     return float(acc), float(auc), float(f1), cm, fig
 
 
@@ -500,7 +516,35 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
 
-if __name__ == "__main__":
-    sweep_id = wandb.sweep(sweep_config, entity="DDFS", project="ConvNeXt-only")
-    wandb.agent(sweep_id, function=main, count=100)
+def load_best_model(best_config_file: str, best_model_file: str, device):
+    with open(best_config_file, "r") as f:
+        cfg = ast.literal_eval(f.read())
+    model = set_model(cfg).to(device)
+    model.load_state_dict(torch.load(best_model_file, map_location=device))
+    model.eval()
+    _, eval_transform = set_transform_compose(cfg, normalized_channel_means, normalized_channel_stds)
+    test_dataset = CustomDataset(test_df, transform=eval_transform, return_path=True)
+    test_loader = DataLoader(test_dataset, batch_size=int(cfg.get("batch_size", 32)), shuffle=False, num_workers=4)
+    return model, test_loader
 
+def run_best_test(best_id: str):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    best_model_file = f"./models/best_model_{best_id}.pth"
+    best_config_file = f"./configs/best_config_{best_id}.txt"
+    model, test_loader = load_best_model(best_config_file, best_model_file, device)
+    test_acc, test_auc, test_f1, _, _, mis = eval_test(model, test_loader, device, return_misclassified=True)
+    print(f"[BEST TEST] Acc: {test_acc:.4f} | AUC: {test_auc:.4f} | F1: {test_f1:.4f}")
+    if mis:
+        print("Misclassified samples (path, true_label, pred_label):")
+        for p, t, pr in mis:
+            print(p, t, pr)
+
+
+if __name__ == "__main__":
+    # For sweep training, keep previous behavior. To test best model, set BEST_ID env.
+    best_id = os.environ.get("BEST_ID")
+    if best_id:
+        run_best_test(best_id)
+    else:
+        sweep_id = wandb.sweep(sweep_config, entity="DDFS", project="ConvNeXt-only")
+        wandb.agent(sweep_id, function=main, count=100)
