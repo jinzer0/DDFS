@@ -335,9 +335,10 @@ def eval_test(model, test_loader, device, return_misclassified: bool = False):
         all_probs.append(probs.cpu())
 
         if return_misclassified and paths is not None:
-            wrong_mask = preds != labels
-            for p, true_l, pred_l in zip(paths, labels[wrong_mask], preds[wrong_mask]):
-                misclassified.append((p, int(true_l.cpu().item()), int(pred_l.cpu().item())))
+            wrong_mask = (preds != labels).cpu().numpy()
+            for p, true_l, pred_l, wrong in zip(paths, labels.cpu().numpy(), preds.cpu().numpy(), wrong_mask):
+                if wrong:
+                    misclassified.append((p, int(true_l), int(pred_l)))
 
     y_true = torch.cat(all_labels).numpy()
     y_pred = torch.cat(all_preds).numpy()
@@ -516,14 +517,14 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
 
-def load_best_model(best_config_file: str, best_model_file: str, device):
+def load_best_model(best_config_file: str, best_model_file: str, device, test_dataframe):
     with open(best_config_file, "r") as f:
         cfg = ast.literal_eval(f.read())
     model = set_model(cfg).to(device)
     model.load_state_dict(torch.load(best_model_file, map_location=device))
     model.eval()
     _, eval_transform = set_transform_compose(cfg, normalized_channel_means, normalized_channel_stds)
-    test_dataset = CustomDataset(test_df, transform=eval_transform, return_path=True)
+    test_dataset = CustomDataset(test_dataframe, transform=eval_transform, return_path=True)
     test_loader = DataLoader(test_dataset, batch_size=int(cfg.get("batch_size", 32)), shuffle=False, num_workers=4)
     return model, test_loader
 
@@ -531,17 +532,19 @@ def run_best_test(best_id: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     best_model_file = f"./models/best_model_{best_id}.pth"
     best_config_file = f"./configs/best_config_{best_id}.txt"
-    model, test_loader = load_best_model(best_config_file, best_model_file, device)
-    test_acc, test_auc, test_f1, _, _, mis = eval_test(model, test_loader, device, return_misclassified=True)
+    model, test_loader = load_best_model(best_config_file, best_model_file, device, test_df)
+    test_acc, test_auc, test_f1, _, fig, mis = eval_test(model, test_loader, device, return_misclassified=True)
     print(f"[BEST TEST] Acc: {test_acc:.4f} | AUC: {test_auc:.4f} | F1: {test_f1:.4f}")
     if mis:
         print("Misclassified samples (path, true_label, pred_label):")
         for p, t, pr in mis:
             print(p, t, pr)
+    if fig:
+        plt.close(fig)
 
 
 if __name__ == "__main__":
-    # For sweep training, keep previous behavior. To test best model, set BEST_ID env.
+    # For sweep training, keep previous behavior. To test the best model, set BEST_ID env.
     best_id = os.environ.get("BEST_ID")
     if best_id:
         run_best_test(best_id)
