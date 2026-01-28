@@ -1,5 +1,5 @@
 
-import os, random, cv2, shutil, glob, gc
+import os, random, cv2, shutil, glob, gc, ast
 import numpy as np
 import pandas as pd
 import torch
@@ -142,9 +142,10 @@ print(valid_df["label"].value_counts(normalize=True))
 
 
 class CustomDataset(Dataset):
-    def __init__(self, dataframe, transform=None):
+    def __init__(self, dataframe, transform=None, return_path: bool = False):
         self.dataframe = dataframe.reset_index(drop=True)
         self.transform = transform
+        self.return_path = return_path
 
     def __len__(self):
         return len(self.dataframe)
@@ -158,6 +159,8 @@ class CustomDataset(Dataset):
                 img = self.transform(img)
 
         label = 0 if self.dataframe.iloc[idx, 1] == "real" else 1
+        if self.return_path:
+            return img, label, img_path
         return img, label
 
 
@@ -313,7 +316,8 @@ def eval_test(model, test_loader, device):
     all_preds = []
     all_probs = []
 
-    for inputs, labels in test_loader:
+    for batch in test_loader:
+        inputs, labels = batch
         inputs = inputs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True).long()
 
@@ -500,7 +504,29 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
 
+def load_best_model(best_config_file: str, best_model_file: str, device, test_dataframe):
+    with open(best_config_file, "r") as f:
+        cfg = ast.literal_eval(f.read())
+    model = set_model(cfg).to(device)
+    model.load_state_dict(torch.load(best_model_file, map_location=device))
+    model.eval()
+    _, eval_transform = set_transform_compose(cfg, normalized_channel_means, normalized_channel_stds)
+    test_dataset = CustomDataset(test_dataframe, transform=eval_transform)
+    test_loader = DataLoader(test_dataset, batch_size=int(cfg.get("batch_size", 32)), shuffle=False, num_workers=4)
+    return model, test_loader
+
+def run_best_test(best_id: str):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    best_model_file = f"./models/best_model_{best_id}.pth"
+    best_config_file = f"./configs/best_config_{best_id}.txt"
+    model, test_loader = load_best_model(best_config_file, best_model_file, device, test_df)
+    test_acc, test_auc, test_f1, _, fig = eval_test(model, test_loader, device)
+    print(f"[BEST TEST] Acc: {test_acc:.4f} | AUC: {test_auc:.4f} | F1: {test_f1:.4f}")
+    if fig:
+        plt.close(fig)
+
+
 if __name__ == "__main__":
+    # For sweep training, keep previous behavior.
     sweep_id = wandb.sweep(sweep_config, entity="DDFS", project="ConvNeXt-only")
     wandb.agent(sweep_id, function=main, count=100)
-
