@@ -544,10 +544,6 @@ def run_best_test(best_id: str):
 
 
 if __name__ == "__main__":
-    # For sweep training, keep previous behavior. To test the best model, set BEST_ID env.
-    best_id = os.environ.get("BEST_ID")
-    if best_id:
-        run_best_test(best_id)
-    else:
-        sweep_id = wandb.sweep(sweep_config, entity="DDFS", project="ConvNeXt-only")
-        wandb.agent(sweep_id, function=main, count=100)
+    # For sweep training, keep previous behavior.
+    sweep_id = wandb.sweep(sweep_config, entity="DDFS", project="ConvNeXt-only")
+    wandb.agent(sweep_id, function=main, count=100)
