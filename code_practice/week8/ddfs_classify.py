@@ -310,19 +310,14 @@ def set_model(config): # model 생성
     return model
 
 @torch.no_grad()
-def eval_test(model, test_loader, device, return_misclassified: bool = False):
+def eval_test(model, test_loader, device):
     model.eval()
     all_labels = []
     all_preds = []
     all_probs = []
-    misclassified = []
 
     for batch in test_loader:
-        if len(batch) == 2:
-            inputs, labels = batch
-            paths = None
-        else:
-            inputs, labels, paths = batch
+        inputs, labels = batch
         inputs = inputs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True).long()
 
@@ -333,12 +328,6 @@ def eval_test(model, test_loader, device, return_misclassified: bool = False):
         all_labels.append(labels.cpu())
         all_preds.append(preds.cpu())
         all_probs.append(probs.cpu())
-
-        if return_misclassified and paths is not None:
-            wrong_mask = (preds != labels).cpu().numpy()
-            for p, true_l, pred_l, wrong in zip(paths, labels.cpu().numpy(), preds.cpu().numpy(), wrong_mask):
-                if wrong:
-                    misclassified.append((p, int(true_l), int(pred_l)))
 
     y_true = torch.cat(all_labels).numpy()
     y_pred = torch.cat(all_preds).numpy()
@@ -359,8 +348,6 @@ def eval_test(model, test_loader, device, return_misclassified: bool = False):
 
     f1 = f1_score(y_true, y_pred, average="binary")
     
-    if return_misclassified:
-        return float(acc), float(auc), float(f1), cm, fig, misclassified
     return float(acc), float(auc), float(f1), cm, fig
 
 
@@ -524,7 +511,7 @@ def load_best_model(best_config_file: str, best_model_file: str, device, test_da
     model.load_state_dict(torch.load(best_model_file, map_location=device))
     model.eval()
     _, eval_transform = set_transform_compose(cfg, normalized_channel_means, normalized_channel_stds)
-    test_dataset = CustomDataset(test_dataframe, transform=eval_transform, return_path=True)
+    test_dataset = CustomDataset(test_dataframe, transform=eval_transform)
     test_loader = DataLoader(test_dataset, batch_size=int(cfg.get("batch_size", 32)), shuffle=False, num_workers=4)
     return model, test_loader
 
@@ -533,12 +520,8 @@ def run_best_test(best_id: str):
     best_model_file = f"./models/best_model_{best_id}.pth"
     best_config_file = f"./configs/best_config_{best_id}.txt"
     model, test_loader = load_best_model(best_config_file, best_model_file, device, test_df)
-    test_acc, test_auc, test_f1, _, fig, mis = eval_test(model, test_loader, device, return_misclassified=True)
+    test_acc, test_auc, test_f1, _, fig = eval_test(model, test_loader, device)
     print(f"[BEST TEST] Acc: {test_acc:.4f} | AUC: {test_auc:.4f} | F1: {test_f1:.4f}")
-    if mis:
-        print("Misclassified samples (path, true_label, pred_label):")
-        for p, t, pr in mis:
-            print(p, t, pr)
     if fig:
         plt.close(fig)
 
